@@ -2,7 +2,7 @@
 ### Deep Learning Models for MRI and CT Segmentation (CARE Challenge)
 
 <p align="center">
-<img src="figures/overview.png" width="100%">
+<img src="figure/overview.png" width="100%">
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@ Two independent segmentation tasks are included:
 ## Pipeline
 
 <p align="center">
-<img src="figures/diagram.png" width="95%">
+<img src="figure/diagram.png" width="95%">
 </p>
 
 The MRI framework jointly learns
@@ -60,13 +60,13 @@ Unlike conventional two-stage methods, the proposed framework learns anatomical 
 ### Training Curves
 
 <p align="center">
-<img src="figures/MR_1.png" width="95%">
+<img src="figure/MR_1.png" width="95%">
 </p>
 
 ### Segmentation Examples
 
 <p align="center">
-<img src="figures/MR_2.png" width="95%">
+<img src="figure/MR_2.png" width="95%">
 </p>
 
 ### Performance
@@ -85,7 +85,7 @@ The cavity segmentation achieved stable performance on both the training and val
 ## Pipeline
 
 <p align="center">
-<img src="figures/CT_diagram.png" width="90%">
+<img src="figure/CT_diagram.png" width="90%">
 </p>
 
 The CT model adopts a semi-supervised learning framework based on **SwinUNETR**.
@@ -109,13 +109,13 @@ Two parallel networks are optimized using **Cross Pseudo Supervision (CPS)** to 
 ### Training Curves
 
 <p align="center">
-<img src="figures/training_summary_CT.png" width="90%">
+<img src="figure/training_summary_CT.png" width="90%">
 </p>
 
 ### Segmentation Examples
 
 <p align="center">
-<img src="figures/CT_results.png" width="90%">
+<img src="figure/CT_results.png" width="90%">
 </p>
 
 ### Performance
