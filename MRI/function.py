@@ -133,76 +133,15 @@ def shape_attention_losses(out_la,out_scar,label,prob_normal,prob_scar):
     return loss_scar_mask1, loss_scar_mask2
 
 
-def dice_loss_binary(pred, target, eps=1e-6):
-    pred = pred.contiguous()
-    target = target.contiguous()
-
-    intersection = torch.sum(pred * target)
-
-    dice = (
-        2.0 * intersection + eps
-    ) / (
-        torch.sum(pred) + torch.sum(target) + eps
-    )
-
-    return 1.0 - dice
-
-
-def focal_loss_binary(
-    pred,
-    target,
-    alpha=0.75,
-    gamma=2.0,
-    eps=1e-6,
-):
-    pred = torch.clamp(pred, eps, 1.0 - eps)
-
-    bce = -(
-        target * torch.log(pred)
-        + (1.0 - target) * torch.log(1.0 - pred)
-    )
-
-    pt = (
-        target * pred
-        + (1.0 - target) * (1.0 - pred)
-    )
-
-    alpha_t = (
-        target * alpha
-        + (1.0 - target) * (1.0 - alpha)
-    )
-
-    focal = alpha_t * (1.0 - pt).pow(gamma) * bce
-
-    return focal.mean()
-
 def F_loss_scar(output, label, LAdist, prob_normal, prob_scar):
     out_LA, out_scar = output
     lossfunc1 = nn.BCELoss().to(device)
     loss_la = lossfunc1(out_LA, label)
     loss_sdf_la = torch.mean(((out_LA-0.5)*LAdist))
 
-    # lossfunc2 = nn.MSELoss().to(device)
-    # gt_scar_probmap = torch.cat((prob_normal, prob_scar), dim=1)
-    # loss_scar = lossfunc2(out_scar, gt_scar_probmap)#F_hellinger_distance
-    pred_scar = out_scar[:, 1:2]
-
-    loss_dice_scar = dice_loss_binary(
-        pred_scar,
-        prob_scar
-    )
-
-    loss_focal_scar = focal_loss_binary(
-        pred_scar,
-        prob_scar,
-        alpha=0.75,
-        gamma=2.0
-    )
-
-    loss_scar = (
-        loss_dice_scar
-    + 0.5 * loss_focal_scar
-    )
+    lossfunc2 = nn.MSELoss().to(device)
+    gt_scar_probmap = torch.cat((prob_normal, prob_scar), dim=1)
+    loss_scar = lossfunc2(out_scar, gt_scar_probmap)#F_hellinger_distance
     
     loss_scar_mask1, loss_scar_mask2 = shape_attention_losses(out_la=out_LA, out_scar=out_scar, label=label, prob_normal=prob_normal, prob_scar=prob_scar,)
         
