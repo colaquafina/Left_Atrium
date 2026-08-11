@@ -116,15 +116,6 @@ Update this section after adding the code to the repository.
 
 ## Installation
 
-```bash
-git clone https://github.com/colaquafina/BIOS740_JushenWu.git
-cd BIOS740_JushenWu
-
-python -m venv .venv
-source .venv/bin/activate       # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
 The CT pipeline is implemented with [MONAI](https://monai.io/) and PyTorch. Add the tested Python, PyTorch, CUDA, and MONAI versions here once the environment file is finalized.
 
 ## Data preparation
@@ -198,13 +189,3 @@ where $P$ is the predicted mask and $G$ is the ground-truth mask. CT performance
 1. Li, L., et al. “AtrialJSQnet: A new framework for joint segmentation and quantification of left atrium and scars incorporating spatial and shape information.” *Medical Image Analysis*, 76, 102303, 2022.
 2. Cao, H., et al. “Swin-Unet: Unet-like pure transformer for medical image segmentation.” *European Conference on Computer Vision*, 2022.
 3. Hatamizadeh, A., et al. “Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images.” *BrainLes 2021*, 2022.
-
-## Author
-
-Jushen Wu  
-University of North Carolina at Chapel Hill  
-[gsonw@unc.edu](mailto:gsonw@unc.edu)
-
-## License
-
-No license has been selected yet. Add a `LICENSE` file before public reuse or redistribution.
