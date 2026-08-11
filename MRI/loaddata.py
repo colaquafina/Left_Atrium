@@ -2,8 +2,6 @@ import numpy as np
 import nibabel as nib
 import torch
 from scipy import stats
-from torch import nn
-import scipy.ndimage as ndimage
 from function import compute_sdf
 # import kornia
 from function import F_DistTransform
@@ -20,64 +18,41 @@ patch_size = (height, depth, length)
 from monai.transforms import (
     Compose,
     RandAffined,
-    Rand3DElasticd,
     RandGaussianNoised,
     RandGaussianSmoothd,
     RandAdjustContrastd,
     RandShiftIntensityd,
     RandScaleIntensityd,
     RandBiasFieldd,
-    EnsureTyped,
 )
 
 def get_train_augmentation():
     return Compose([
         RandAffined(
             keys=["image", "label", "scar"],
-            prob=0.4,
-            rotate_range=(0.1, 0.1, 0.1),
-            scale_range=(0.06, 0.06, 0.06),
-            translate_range=(5, 5, 3),
+            prob=0.1,
+            rotate_range=(0.05, 0.05, 0.05),
+            scale_range=(0.03, 0.03, 0.03),
+            translate_range=(2, 2, 1),
             mode=("bilinear", "nearest", "nearest"),
             padding_mode="border",
-        ),
-
-        # Rand3DElasticd(
-        #     keys=["image", "label", "scar"],
-        #     prob=0.12,
-        #     sigma_range=(4, 6),
-        #     magnitude_range=(1, 2),
-        #     mode=("bilinear", "nearest", "nearest"),
-        #     padding_mode="border",
-        # ),
-
-        RandScaleIntensityd(
-            keys=["image"],
-            factors=0.15,
-            prob=0.5,
-        ),
-
-        RandShiftIntensityd(
-            keys=["image"],
-            offsets=0.12,
-            prob=0.5,
         ),
 
         RandAdjustContrastd(
             keys=["image"],
             gamma=(0.8, 1.2),
-            prob=0.4,
+            prob=0.2,
         ),
 
         RandBiasFieldd(
             keys=["image"],
             coeff_range=(0.0, 0.2),
-            prob=0.3,
+            prob=0.2,
         ),
 
         RandGaussianNoised(
             keys=["image"],
-            prob=0.3,
+            prob=0.15,
             mean=0.0,
             std=0.03,
         ),
@@ -92,11 +67,6 @@ def get_train_augmentation():
     ])
 
 def apply_augmentation(image, label, scar, aug=None):
-    """
-    image, label, scar shapes: (H, W, D)
-    Returns augmented arrays with same shapes.
-    """
-
     if aug is None:
         return image, label, scar
 
@@ -110,60 +80,32 @@ def apply_augmentation(image, label, scar, aug=None):
 
     data_aug = aug(data)
 
-    image_aug = data_aug["image"][0]
-    label_aug = data_aug["label"][0]
-    scar_aug = data_aug["scar"][0]
+    image_aug = np.asarray(data_aug["image"][0])
+    label_aug = np.asarray(data_aug["label"][0])
+    scar_aug = np.asarray(data_aug["scar"][0])
 
     label_aug = (label_aug > 0.5).astype(np.uint8)
     scar_aug = (scar_aug > 0.5).astype(np.uint8)
 
-    # scar should only exist inside LA
-    scar_aug = scar_aug * (label_aug > 0)
+    # Do not remove scar outside the LA.
+    augmented_scar_sum = scar_aug.sum()
 
-    # scar-specific safety check
-    if original_scar_sum > 0 and scar_aug.sum() == 0:
-        return image, label, scar
+    # Reject a spatial transformation if it destroys too much scar.
+    if original_scar_sum > 0:
+        remaining_fraction = augmented_scar_sum / original_scar_sum
 
-    return image_aug.astype(np.float32), label_aug, scar_aug
+        if remaining_fraction < 0.8:
+            return (
+                image.astype(np.float32),
+                label.astype(np.uint8),
+                scar.astype(np.uint8),
+            )
 
-def weak_intensity_aug(x):
-    """
-    Weak image augmentation only.
-    x shape: [B, C, D, H, W] or similar.
-    """
-    if torch.rand(1).item() < 0.5:
-        noise = torch.randn_like(x) * 0.01
-        x = x + noise
-
-    if torch.rand(1).item() < 0.5:
-        scale = 1.0 + (torch.rand(1, device=x.device).item() - 0.5) * 0.10
-        shift = (torch.rand(1, device=x.device).item() - 0.5) * 0.05
-        x = x * scale + shift
-
-    return torch.clamp(x, 0.0, 1.0)
-
-
-def strong_intensity_aug(x):
-    """
-    Strong image augmentation only.
-    Safer than strong spatial deformation for scar consistency.
-    """
-    if torch.rand(1).item() < 0.8:
-        noise = torch.randn_like(x) * 0.03
-        x = x + noise
-
-    if torch.rand(1).item() < 0.8:
-        scale = 1.0 + (torch.rand(1, device=x.device).item() - 0.5) * 0.30
-        shift = (torch.rand(1, device=x.device).item() - 0.5) * 0.15
-        x = x * scale + shift
-
-    if torch.rand(1).item() < 0.5:
-        gamma = 0.7 + torch.rand(1, device=x.device).item() * 0.6
-        x = torch.clamp(x, 0.0, 1.0)
-        x = x ** gamma
-
-    return torch.clamp(x, 0.0, 1.0)
-
+    return (
+        image_aug.astype(np.float32),
+        label_aug,
+        scar_aug,
+    )
 
 def _get_la_center_coord(numpylabel):
     center_slice = numpylabel[:, :, int(numpylabel.shape[2] / 2)]
@@ -171,6 +113,13 @@ def _get_la_center_coord(numpylabel):
     if len(coords[0]) == 0:
         raise ValueError("LA label is empty on the center slice. Cannot compute MRI-style center crop.")
     return np.floor(np.mean(np.stack(coords), axis=-1)).astype(np.int16)
+
+
+def _get_image_center_coord(numpyimage):
+    return np.array(
+        [numpyimage.shape[0] // 2, numpyimage.shape[1] // 2],
+        dtype=np.int16
+    )
 
 
 def F_nifity_imageCrop(numpyimage, center_coord, output_size=patch_size):
@@ -363,13 +312,26 @@ def LoadDataset_scar(imagenames, labelnames, scarlabelnames, augment=False):
     )
 
 
-def save_test_img(nibimage, outputlab):
+def LoadTestDataset(imagename):
+    nibimage = nib.load(imagename)
+    imagedata = np.asanyarray(nibimage.dataobj)
+    numpyimage = np.array(imagedata).squeeze()
+
+    center_coord = _get_image_center_coord(numpyimage)
+    numpyimage_crop = F_nifity_imageCrop(numpyimage, center_coord)
+    numpyimage_crop_processed = np.nan_to_num(stats.zscore(numpyimage_crop))
+
+    return np.expand_dims(numpyimage_crop_processed, 0), nibimage, center_coord
+
+
+def save_test_img(nibimage, outputlab, center_coord=None):
     outputlab = np.asarray(outputlab)
     imagedata = np.asanyarray(nibimage.dataobj)
     reference = np.array(imagedata).squeeze()
     ref_shape = reference.shape
 
-    center_coord = _get_la_center_coord(reference)
+    if center_coord is None:
+        center_coord = _get_image_center_coord(reference)
     crop_h, crop_w = outputlab.shape[0], outputlab.shape[1]
     sx = int(center_coord[0] - crop_h / 2)
     sy = int(center_coord[1] - crop_w / 2)
@@ -400,14 +362,10 @@ def save_test_img(nibimage, outputlab):
     predictlabel = nib.Nifti1Image(restored, nibimage.affine, nibimage.header)
     return predictlabel
 
-def ProcessTestDataset(imagename, LAlabelname, LAscarMaplabelname, Seg_net):
+def ProcessTestDataset(imagename, Seg_net):
     # print('loading test image: ' + imagename)
 
-    # Keep this for saving affine/header
-    nibimage = nib.load(LAlabelname)
-
-    # ✅ Use the SAME pipeline as training
-    numpyimage, _, _, _, _ = LoadDataset_scar(imagename, LAlabelname, LAscarMaplabelname, augment=False)
+    numpyimage, nibimage, center_coord = LoadTestDataset(imagename)
 
     tensorimage = torch.from_numpy(numpyimage).unsqueeze(0).float().to(device)
 
@@ -422,10 +380,10 @@ def ProcessTestDataset(imagename, LAlabelname, LAscarMaplabelname, Seg_net):
     # Scar prediction
     output2 = np.squeeze(out_scar.cpu().detach().numpy(), axis=0)
     output_new = np.argmax(output2, axis=0)
-    scar_region = (output_new == 1) & (output2[1] > 0.5) & (label_LA > 0)
+    scar_region = (output_new == 1) & (output2[1] > 0.5)
     label_scar = scar_region.astype(np.uint8)
 
-    predict_LA = save_test_img(nibimage, label_LA)
-    predict_scar = save_test_img(nibimage, label_scar)
+    predict_LA = save_test_img(nibimage, label_LA, center_coord=center_coord)
+    predict_scar = save_test_img(nibimage, label_scar, center_coord=center_coord)
 
     return predict_LA, predict_scar

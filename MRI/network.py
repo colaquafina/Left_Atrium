@@ -15,10 +15,10 @@ class DoubleConv(nn.Module):
         super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_ch),
+            nn.GroupNorm(num_groups=8, num_channels=out_ch),
             nn.ReLU(inplace=True),
             nn.Conv3d(out_ch, out_ch, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_ch),
+            nn.GroupNorm(num_groups=8, num_channels=out_ch),
             nn.ReLU(inplace=True)
         )
 
@@ -38,7 +38,7 @@ class Seg_Encoder(nn.Module):
         self.conv4 = DoubleConv(64, 128)
         self.pool4 = nn.MaxPool3d(2, stride=2)
         self.conv5 = DoubleConv(128, 256)
-
+        self.bottleneck_dropout = nn.Dropout3d(p=0.2)
         # self.atten1 = SAlayer(16)
         # self.atten2 = SAlayer(32)
         # self.atten3 = SAlayer(64)
@@ -58,7 +58,7 @@ class Seg_Encoder(nn.Module):
         #c4=self.atten4(c4)
         p4=self.pool4(c4)
         c5=self.conv5(p4)
-
+        c5 = self.bottleneck_dropout(c5)
         return c1, c2, c3, c4, c5
 
 class Seg_Decoder_1(nn.Module):

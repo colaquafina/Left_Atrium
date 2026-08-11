@@ -1,31 +1,19 @@
 import numpy as np
 from torch import nn
 import torch
-import re
-import collections
-import torch.nn.functional as F
 from scipy.ndimage import distance_transform_edt as distance
 from skimage import segmentation as skimage_seg
 # import kornia
 import os
-import glob
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
+
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def _find_latest_checkpoint(checkpoint_dir, prefix):
-    pattern = os.path.join(checkpoint_dir, prefix + '*.pkl')
-    candidates = glob.glob(pattern)
-    if not candidates:
-        raise FileNotFoundError(f'No checkpoints found for pattern: {pattern}')
 
-    def extract_epoch(path):
-        match = re.search(r'(\d+)\.pkl$', os.path.basename(path))
-        return int(match.group(1)) if match else -1
-
-    return max(candidates, key=extract_epoch)
 
 
 def save_training_preview(epoch, image, gt_la, gt_scar, pred_la, pred_scar, tag, preview_dir):
@@ -38,22 +26,13 @@ def save_training_preview(epoch, image, gt_la, gt_scar, pred_la, pred_scar, tag,
     # Keep top 50% scar probabilities inside predicted LA
     scar_vals_in_la = pred_scar_prob_np[pred_la_np > 0]
 
-    if scar_vals_in_la.size > 0:
-        if tag == 'train':
-            thresh = 0.5
-        else:
-            thresh = np.max(scar_vals_in_la)*0.6
-        pred_scar_np = ((pred_scar_prob_np > thresh) & (pred_la_np > 0)).astype(np.uint8)
-        print(thresh)
-    else:
-        pred_scar_np = np.zeros_like(pred_scar_prob_np, dtype=np.uint8)
+    pred_scar_np = (pred_scar_prob_np > 0.5).astype(np.uint8)
     
     scar_volume = gt_scar_np.sum(axis=(0, 1))
     if scar_volume.max() > 0:
         slice_idx = int(np.argmax(scar_volume))
     else:
         slice_idx = image_np.shape[2] // 2
-    
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
     panel_data = [
         (image_np[:, :, slice_idx], 'Image', 'gray'),
@@ -78,61 +57,124 @@ def save_training_preview(epoch, image, gt_la, gt_scar, pred_la, pred_scar, tag,
     plt.close(fig)
     
     
-def get_consistency_weight(epoch):
-    """
-    Gradually turn on consistency loss.
-    """
-    ramp = min(1.0, epoch / 50)
-    return 0.1 * ramp
-
-def consistency_loss(student_output, teacher_output, SCAR_CONS_WEIGHT):
-    """
-    student_output: output from strong image
-    teacher_output: output from weak image
-
-    output = (LA_prediction, scar_prediction)
-    """
-    student_la, student_scar = student_output
-    teacher_la, teacher_scar = teacher_output
-
-    teacher_la = teacher_la.detach()
-    teacher_scar = teacher_scar.detach()
-
-    # LA consistency
-    loss_cons_la = F.mse_loss(student_la, teacher_la)
-
-    # Scar consistency only inside teacher-predicted LA region.
-    # This avoids forcing scar predictions outside the atrium.
-    la_mask = (teacher_la > 0.5).float()
-
-    if la_mask.sum() > 0:
-        loss_cons_scar = F.mse_loss(
-            student_scar * la_mask,
-            teacher_scar * la_mask
-        )
-    else:
-        loss_cons_scar = torch.tensor(0.0, device=student_la.device)
-
-    loss_cons = loss_cons_la + SCAR_CONS_WEIGHT * loss_cons_scar
-
-    return loss_cons, loss_cons_la, loss_cons_scar
-
-
 def _load_state_dict_safely(net_param):
     try:
         return torch.load(net_param, map_location='cpu', weights_only=True)
     except TypeError:
         return torch.load(net_param, map_location='cpu')
 
-def _boundary_mask_from_prob(prob_map, max_distance=1.5):
-    """
-    Build a thin boundary band from a soft target generated as exp(-distance).
-    We exclude the region interior (prob ~= 1) and keep voxels within a small
-    distance of the class boundary.
-    """
-    eps = 0.1
-    lower_prob = np.exp(-max_distance)
-    return ((prob_map >= lower_prob) & (prob_map < 1.0 - eps)).float()
+
+def boundary_band(mask, kernel_size=5):
+    mask = (mask > 0.5).float()
+
+    dilated = F.max_pool3d(
+        mask,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=kernel_size // 2,
+    )
+
+    eroded = -F.max_pool3d(
+        -mask,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=kernel_size // 2,
+    )
+
+    return (dilated - eroded).clamp(0.0, 1.0)
+
+def soft_boundary(probability, kernel_size=5):
+    local_max = F.max_pool3d(
+        probability,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=kernel_size // 2,
+    )
+
+    local_min = -F.max_pool3d(
+        -probability,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=kernel_size // 2,
+    )
+
+    return (local_max - local_min).clamp(min=0.0, max=1.0)
+
+def shape_attention_losses(out_la,out_scar,label,prob_normal,prob_scar):
+    gt_difference = prob_normal - prob_scar
+    pred_difference = (
+        out_scar[:, 0:1] - out_scar[:, 1:2]
+    )
+
+    # M1: ground-truth LA boundary
+    mask_gd = boundary_band(label)
+
+    # M2: differentiable predicted LA boundary
+    mask_pred = soft_boundary(out_la)
+
+    squared_error = (
+        pred_difference - gt_difference
+    ).square()
+
+    loss_scar_mask1 = torch.sum(
+        mask_gd * squared_error
+    ) / torch.clamp(
+        torch.sum(mask_gd),
+        min=1.0,
+    )
+
+    loss_scar_mask2 = torch.sum(
+        mask_pred * squared_error
+    ) / torch.clamp(
+        torch.sum(mask_pred),
+        min=1.0,
+    )
+
+    return loss_scar_mask1, loss_scar_mask2
+
+
+def dice_loss_binary(pred, target, eps=1e-6):
+    pred = pred.contiguous()
+    target = target.contiguous()
+
+    intersection = torch.sum(pred * target)
+
+    dice = (
+        2.0 * intersection + eps
+    ) / (
+        torch.sum(pred) + torch.sum(target) + eps
+    )
+
+    return 1.0 - dice
+
+
+def focal_loss_binary(
+    pred,
+    target,
+    alpha=0.75,
+    gamma=2.0,
+    eps=1e-6,
+):
+    pred = torch.clamp(pred, eps, 1.0 - eps)
+
+    bce = -(
+        target * torch.log(pred)
+        + (1.0 - target) * torch.log(1.0 - pred)
+    )
+
+    pt = (
+        target * pred
+        + (1.0 - target) * (1.0 - pred)
+    )
+
+    alpha_t = (
+        target * alpha
+        + (1.0 - target) * (1.0 - alpha)
+    )
+
+    focal = alpha_t * (1.0 - pt).pow(gamma) * bce
+
+    return focal.mean()
 
 def F_loss_scar(output, label, LAdist, prob_normal, prob_scar):
     out_LA, out_scar = output
@@ -140,32 +182,35 @@ def F_loss_scar(output, label, LAdist, prob_normal, prob_scar):
     loss_la = lossfunc1(out_LA, label)
     loss_sdf_la = torch.mean(((out_LA-0.5)*LAdist))
 
-    lossfunc2 = nn.MSELoss().to(device)
-    gt_scar_probmap = torch.cat((prob_normal, prob_scar), dim=1)
-    loss_scar = lossfunc2(out_scar, gt_scar_probmap)#F_hellinger_distance
+    # lossfunc2 = nn.MSELoss().to(device)
+    # gt_scar_probmap = torch.cat((prob_normal, prob_scar), dim=1)
+    # loss_scar = lossfunc2(out_scar, gt_scar_probmap)#F_hellinger_distance
+    pred_scar = out_scar[:, 1:2]
 
-    lossfunc3 = nn.MSELoss(reduction='sum').to(device)
-    normal_boundary = _boundary_mask_from_prob(prob_normal, max_distance=1.5)
-    scar_boundary = _boundary_mask_from_prob(prob_scar, max_distance=1.5)
-    mask_gd = ((normal_boundary + scar_boundary) > 0).float()
-    # mask_gd = (torch.min(torch.abs(torch.logit(gt_scar_probmap)), dim=1)[0]==0).float()
-    # mask_gd = (torch.min(-torch.log(gt_scar_probmap), dim=1)[0]==0).float()
-    # out_LA_gradient = kornia.sobel(((out_LA>0.5).float()))
-    # mask_pred = (out_LA_gradient>0.4).float()
-    mask_pred = ((out_LA > 0.1) * (out_LA < 0.8)).float()
-    mask_gd_denom = torch.clamp(torch.sum(mask_gd), min=1.0)
-    mask_pred_denom = torch.clamp(torch.sum(mask_pred), min=1.0)
-    loss_scar_mask1 = lossfunc3(mask_gd*(gt_scar_probmap[:, 0] - gt_scar_probmap[:, 1]), mask_gd*(out_scar[:, 0] - out_scar[:, 1])) / mask_gd_denom
-    loss_scar_mask2 = lossfunc3(mask_pred * (gt_scar_probmap[:, 0] - gt_scar_probmap[:, 1]), mask_pred * (out_scar[:, 0] - out_scar[:, 1])) / mask_pred_denom
+    loss_dice_scar = dice_loss_binary(
+        pred_scar,
+        prob_scar
+    )
 
+    loss_focal_scar = focal_loss_binary(
+        pred_scar,
+        prob_scar,
+        alpha=0.75,
+        gamma=2.0
+    )
+
+    loss_scar = (
+        loss_dice_scar
+    + 0.5 * loss_focal_scar
+    )
+    
+    loss_scar_mask1, loss_scar_mask2 = shape_attention_losses(out_la=out_LA, out_scar=out_scar, label=label, prob_normal=prob_normal, prob_scar=prob_scar,)
+        
     return loss_la, loss_sdf_la, loss_scar, loss_scar_mask1, loss_scar_mask2
 
+
 def F_mkdir(path):
- 
-	folder = os.path.exists(path)
- 
-	if not folder:                   
-		os.makedirs(path)
+    os.makedirs(path, exist_ok=True)
 
 def F_hellinger_distance(p, q):
     """
@@ -180,27 +225,6 @@ def F_hellinger_distance(p, q):
 
     return d
 
-def F_loss(output, label):
-
-    lossfunc = nn.BCELoss().to(device)
-    CE_loss = lossfunc(output, label)
-    Dice = LabelDice(output, label, [0, 1])
-    weightedDice = 10*torch.mean(1-Dice[:, 1]) + 0.1*torch.mean(1-Dice[:, 0])
-    Dice_loss = 1-weightedDice
-    loss = CE_loss + 0.1*Dice_loss
-
-    return loss
-
-def F_loss_SDM(output, label):
-    lossfunc = nn.BCELoss().to(device)
-    CE_loss = lossfunc(output, label)
-    loss_seg = CE_loss
-
-    gt_dis = compute_sdf(label.cpu().numpy(), output.shape)
-    gt_dis = torch.from_numpy(gt_dis).float().to(device)
-    loss_sdf_lei = torch.mean(((output - 0.5) * gt_dis))
-
-    return loss_seg, loss_sdf_lei
 
 def F_DistTransform(lab):
     posmask = lab.astype(bool)
@@ -243,20 +267,7 @@ def compute_sdf(img_gt, out_shape):
 
     return np.clip(normalized_sdf, -T, T)
 
-def AAAI_sdf_loss(net_output, gt_sdm):
-    # print('net_output.shape, gt_sdm.shape', net_output.shape, gt_sdm.shape)
-    # ([4, 1, 112, 112, 80])
-    smooth = 1e-5
-    # compute eq (4)
-    intersect = torch.sum(net_output * gt_sdm)
-    pd_sum = torch.sum(net_output ** 2)
-    gt_sum = torch.sum(gt_sdm ** 2)
-    L_product = (intersect + smooth) / (intersect + pd_sum + gt_sum + smooth)
-    # print('L_product.shape', L_product.shape) (4,2)
-    # L_SDF_AAAI = - L_product + torch.norm(net_output - gt_sdm, 1)/torch.numel(net_output)
-    L_SDF_AAAI = torch.norm(net_output - gt_sdm, 1) / torch.numel(net_output)
 
-    return L_SDF_AAAI
 
 def LabelDice(A, B, class_labels):
     '''
@@ -297,31 +308,7 @@ def F_Dice(A, B):
     return 2 * torch.sum(A * B, -1) / (ABsum + eps)
 
 
-def binary_dice_score_scar(pred, target, threshold=0.5):
-    '''
-    pred: (n_batch, n_class, ...)
-    target: (n_batch, n_class, ...)
-    return: (n_batch, n_class)
-    '''
-    eps = 1e-8
 
-    # flatten
-    pred_flat = pred.flatten(2)                     # (B, C, N)
-    target = (target > 0.5).float().flatten(2)
-
-    # max per (B, C)
-    max_val = pred_flat.max(dim=-1, keepdim=True).values   # (B, C, 1)
-
-    thresh = 0.6 * max_val
-
-    # binarize
-    pred_bin = (pred_flat > thresh).float()
-
-    # Dice
-    intersection = torch.sum(pred_bin * target, dim=-1)
-    denominator = torch.sum(pred_bin, dim=-1) + torch.sum(target, dim=-1)
-
-    return (2 * intersection + eps) / (denominator + eps)
 
 def binary_dice_score(pred, target, threshold=0.5):
     '''
