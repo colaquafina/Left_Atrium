@@ -91,27 +91,6 @@ At inference time, the probability outputs of both networks are averaged. Slidin
 
 ## Repository structure
 
-Update this section after adding the code to the repository.
-
-```text
-.
-├── README.md
-├── assets/                   # Architecture diagrams, curves, and examples
-├── requirements.txt          # Python dependencies
-├── data/                     # Dataset or dataset links (do not commit private data)
-├── mri/                      # LA cavity and scar pipeline
-│   ├── train.py
-│   ├── infer.py
-│   ├── models/
-│   ├── losses/
-│   └── utils/
-├── ct/                       # Semi-supervised CT pipeline
-│   ├── train.py
-│   ├── infer.py
-│   ├── models/
-│   └── utils/
-├── configs/                  # Experiment configurations
-└── outputs/                  # Checkpoints, logs, and predictions
 ```
 
 ## Installation
