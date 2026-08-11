@@ -126,7 +126,7 @@ def Train_process(dataload, net, epoch, optimizer):
             output, lgelabel, lgedist, lgeprob_normal, lgeprob_scar
         )
 
-        loss = loss_la + 0.01 * loss_sdf_la + loss_scar + 0.01 * loss_scar_m1 + 0.001*loss_scar_m2
+        loss = loss_la + 0.01 * loss_sdf_la + 10 * loss_scar + 0.01 * loss_scar_m1 + 0.001*loss_scar_m2
 
         loss.backward()
         optimizer.step()
@@ -234,7 +234,7 @@ def Validate(dataload, net, epoch):
                 lgeprob_scar
             )
 
-            loss = loss_la + 0.01 * loss_sdf_la + loss_scar + 0.01 * loss_scar_m1 + 0.001*loss_scar_m2
+            loss = loss_la + 0.01 * loss_sdf_la + 10 * loss_scar + 0.01 * loss_scar_m1 + 0.001*loss_scar_m2
 
             out_la, out_scar = output
             batch_la_dice = binary_dice_score(out_la, lgelabel)
