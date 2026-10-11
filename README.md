@@ -44,6 +44,7 @@ $$
 + \lambda_{M2}\mathcal{L}^{SA}_{scar,M2}.
 $$
 
+One thing we should notice which is different from the original model is that the scar can be outside of the cavity segmentation
 #### MRI results
 
 ![MRI training and validation curves](assets/mri-training-curves.png)
