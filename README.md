@@ -15,7 +15,6 @@ The project was developed for the CARE challenge as part of BIOS 740.
 | LA scar segmentation (MRI) | 0.60 | 0.40 |
 | Multi-structure segmentation (CT) | 0.98 | 0.88 |
 
-> Dice values are reported from the experiments described in the project report. Background is excluded from the mean CT Dice.
 
 ## Method overview
 
